@@ -1,0 +1,191 @@
+import os
+import re
+import logging
+import time
+import subprocess
+import paramiko
+
+#logging.basicConfig(filename='stress_test.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
+
+hostname = "10.20.30.40"
+username = "root"
+password = "root"
+
+def close_ssh_connection(ssh):
+    # close the connection
+    logging.info("Closing SSH Connection!")
+    ssh.close()
+    exit()
+
+#def setup_test_env(ssh):
+def remote_cmd(ssh, remote_cmd):
+    logging.info("Remote Cmd: {}".format(remote_cmd))
+    stdin, stdout, stderr = ssh.exec_command(remote_cmd)
+    remote_cmd_result=stdout.read().decode()
+    logging.info("Result: {}".format(remote_cmd_result))
+    
+    # logging.info errors if there are any
+    err = stderr.read().decode()
+    if err:
+        logging.info(err)
+    return remote_cmd_result, err
+
+def shell_cmd(cmd):
+    res=subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True, encoding='utf-8')
+    (cmd_result, cmd_err)=res.communicate()
+    logging.info("Shell Cmd: {}".format(cmd))
+    logging.info(cmd_result)
+    return cmd_result, cmd_err
+
+def setup_test_env(ssh, sit):
+    logging.info("TBD:: setting up env")
+    return True
+
+def run_reboot_stress_test(test_reload=None,
+                           test_fw_upgrade_downgrade=None,
+                           test_max_vfs=None,
+                           test_reboot=None,
+                           **kwargs):
+    logging.info("Running reboot stress test")
+
+    if hostname is None or username is None or password is None:
+        logging.error("Need HOSTNAME - USERNAME - PASSWORD")
+        return
+
+    if test_reload and test_reboot and test_fw_upgrade_downgrade:
+        logging.error("Must specify one: test_reload/test_reboot/test_fw_upgrade_downgrade")
+        return
+
+    #Perform reboot and FW flash in a loop for 1000 iterations
+    for i in range(1, 1000):
+        logging.info("TEST ITERNATION:#%d" % i)
+
+        retry = 0
+        while retry <= 10:
+            ping = "ping -c 10 " + hostname
+            ping_res, ping_err = shell_cmd(ping)
+            if ping_err:
+                logging.info("Ping Failed")
+
+            matched = re.search("10 received", ping_res)
+            if matched:
+                logging.info("Able to Ping %s" % hostname)
+                break
+            else:
+                retry = retry + 1
+                time.sleep(30)
+
+        # initialize the SSH client
+        ssh = paramiko.SSHClient()
+        # add to known hosts
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(hostname=hostname, username=username, password=password)
+        except:
+            logging.info("[!] Cannot connect to the SSH Server")
+            exit()
+
+        rem_cmd="last reboot | grep reboot | tail -n 1"
+        res, err = remote_cmd(ssh, rem_cmd)
+        if err :
+            logging.info(err)
+            return
+
+        rem_cmd="cd /opt/vkalyanam/stress_test"
+        res, err = remote_cmd(ssh, rem_cmd)
+        if err :
+            logging.info(err)
+            return
+
+        if test_reload is not None:
+            rem_cmd="rmmod bnxt_re bnxt_en && sleep 1 && modprobe bnxt_en && sleep 1"
+            res, err = remote_cmd(ssh, rem_cmd)
+            if err :
+                logging.info(err)
+                return
+
+        rem_cmd="lshw -businfo -class network | grep XYZW | awk '{print $2}' | head -n 1" <===
+        res, err = remote_cmd(ssh, rem_cmd)
+        if err :
+            logging.info(err)
+            return
+
+        whp_if=res.rstrip()
+        if whp_if is None:
+            logging.info("No WH+ interface exist - ERROR")
+            return
+        logging.info("Found WH+ interface is {}".format(whp_if))
+
+        #rem_cmd = "ethtool %s | grep Link | awk '{print $3}'" % whp_if
+        rem_cmd = "ethtool %s" % whp_if
+        res, err = remote_cmd(ssh, rem_cmd)
+        if err:
+            logging.info(err)
+            return
+
+        matched = re.search("Link detected: yes", res)
+        if matched:
+            logging.info("Link Up on %s" % whp_if)
+        else:
+            logging.error("Link is not Up on %s" % whp_if)
+            return
+
+        if test_fw_upgrade_downgrade is not None:
+            rem_cmd="cd /opt/vkalyanam/stress_test && ./bnxtnvm install downgrade.pkg -y -dev=%s" % whp_if
+            res, err = remote_cmd(ssh, rem_cmd)
+            if err :
+                logging.info(err)
+                return
+
+            rem_cmd="cd /opt/vkalyanam/stress_test && ./bnxtnvm install upgrade.pkg -y -dev=%s" % whp_if
+            res, err = remote_cmd(ssh, rem_cmd)
+            if err :
+                logging.info(err)
+                return
+
+        if test_reboot is not None:
+            logging.info("Rebooting......")
+            rem_cmd="reboot"
+            res, err = remote_cmd(ssh, rem_cmd)
+            if err :
+                logging.info(err)
+                return
+            time.sleep(10)
+
+
+###############################################################################
+##############               ACTUAL STRESS TEST            ####################
+###############################################################################
+
+# initialize the SSH client
+client = paramiko.SSHClient()
+# add to known hosts
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+try:
+    client.connect(hostname=hostname, username=username, password=password)
+except:
+    logging.info("[!] Cannot connect to the SSH Server")
+    exit()
+
+ping="ping -c 2 "+hostname
+ping_res, ping_err = shell_cmd(ping)
+if ping_err:
+    logging.info("Ping Failed")
+    close_ssh_connection(client)
+
+matched=re.search("2 received", ping_res)
+if matched:
+    logging.info("Able to Ping SUT")
+else:
+    logging.error("Failed to ping SUT")
+    exit()
+
+rem_cmd="lscpu"
+rem_cmd_output, rem_cmd_err = remote_cmd(client, rem_cmd)
+
+run_reboot_stress_test(hostname="10.20.30.40", username="root", password="root",
+                       test_reboot=True,
+                       test_fw_upgrade_downgrade=True)
+
+close_ssh_connection(client)
