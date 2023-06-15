@@ -1,0 +1,37 @@
+def remote_cmd(ssh, remote_cmd):
+    stdin, stdout, stderr = ssh.exec_command(remote_cmd)
+    remote_cmd_result=stdout.read().decode()
+    logging.info("Remote Cmd: {}".format(remote_cmd_result))
+    
+    # logging.info errors if there are any
+    err = stderr.read().decode()
+    if err:
+        logging.info(err)
+    return remote_cmd_result, err
+
+def shell_cmd(cmd):
+    res=subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True, encoding='utf-8')
+    (cmd_result, cmd_err)=res.communicate()
+    logging.info("Shell Cmd: {}".format(cmd))
+    logging.info(cmd_result)
+    return cmd_result, cmd_err
+
+client = paramiko.SSHClient()
+# add to known hosts
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+try:
+    client.connect(hostname=hostname, username=username, password=password)
+except:
+    logging.info("[!] Cannot connect to the SSH Server")
+    exit()
+
+
+ping="ping -c 2 "+hostname
+ping_res, ping_err = shell_cmd(ping)
+if ping_err:
+    logging.info("Ping Failed")
+    close_ssh_connection(client)
+
+
+rem_cmd="lscpu"
+rem_cmd_output, rem_cmd_err = remote_cmd(client, rem_cmd)
