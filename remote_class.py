@@ -3,13 +3,17 @@ import paramiko
 from data_class import NetworkInfo
 from transport_handler import TransportHandler
 
+SERVER = 0
+CLIENT = 1
 
 class RemoteClass:
     hostname : str = None
     username: str = None
     password: str = None
 
-    network_info: NetworkInfo = None
+    network_info: NetworkInfo = NetworkInfo
+
+    transport_list : TransportHandler = []
 
     def __init__(self, hostname : str = None, username: str = None, password : str = None,
                  **kwargs):
@@ -29,7 +33,7 @@ class RemoteClass:
             transport.connect(username=self.username, password=self.password)
             self.transport=transport
 
-            self.network_info = self.GetNetworkInfo()
+            self.GetNetworkInfo()
             print(self.network_info)
 
         except:
@@ -95,8 +99,8 @@ class RemoteClass:
                 ret=session.recv_exit_status()
                 if ret != 0:
                     fresult=session.recv_stderr(buffSize)
-                    print(fresult.decode())
-                    raise Exception("{cmd} {}")
+                    #print(fresult.decode())
+                    raise Exception(f"{cmd} Result:{fresult.decode()}")
                 else:
                     while session.recv_ready():
                         result=session.recv(buffSize)
@@ -121,11 +125,29 @@ class RemoteClass:
         print(result)
         return result.strip()
 
-    def GetInterfaceIP(self, if_name: str):
-        print("")
+    def GetIPFromName(self, if_name: str):
+        cmd = f"ip addr show dev {if_name}"
+        cmd = cmd + " | grep inet | head -n 1 | awk '{print $2}' | cut -d '/' -f 1"
+        return self.Get(cmd)
+
+    def GetIPFromIndex(self, pf_index : int):
+        #print(self.network_info)
+        pf_name=self.network_info.pf_list[int(pf_index)]
+
+        cmd=f"ip addr show dev {pf_name}"
+        cmd=cmd+" | grep inet | head -n 1 | awk '{print $2}' | cut -d '/' -f 1"
+
+        return self.Get(cmd)
+
+    def GetRdmaDev(self, l2_dev: str):
+        cmd=f"rdma link | grep {l2_dev}"
+        cmd=cmd+" | awk '{print $2}' | cut -d '/' -f 1"
+        return self.Get(cmd)
+
+    def GetInterfaceFromIndex(self, pf_index: int):
+        return self.network_info.pf_list[int(pf_index)]
 
     def GetNetworkInfo(self, nic_type : str = None):
-
         pf_list = []
         pf_pci_list = []
         vf_list = []
@@ -134,8 +156,6 @@ class RemoteClass:
         if nic_type == None:
             nic_type = "thor2"
 
-        network_info = NetworkInfo(nic_type)
-        print(network_info)
 
         if nic_type == "whp":
             PF_IDENTIFIER="BCM57414"
@@ -161,14 +181,98 @@ class RemoteClass:
             pf_pci_list.append(pci.split('@')[1])
             pf_list.append(if_name)
 
-        print(pf_list)
-        print(pf_pci_list)
+        self.network_info = NetworkInfo(nic_type, pf_list, pf_pci_list)
+        print(f"INIT: {self.network_info}")
+
+    def GenerateIPerfTestPort(self, perf_test: str, pf_index: int = 0):
+        return 23000+500*pf_index
+
+    '''Flexible : provide either pf index or PF name'''
+    def GenerateIPerfTestCommands(
+            self, test_mode: int = 0, test_pf: str = None, pf_index: int = 0,
+            perf_test: str = None, test_port: int = 0,
+            test_instances: int = 1, test_duration: int = 120,
+            cmn_opts: str = None, server_ip: str = None, **kwargs
+            ):
+
+        cmds_list = []
+
+        if test_pf == None:
+            l2_dev=self.GetInterfaceFromIndex(pf_index)
+        else:
+            l2_dev=test_pf
+
+        #print(f"INTERFACES:: MODE {test_mode} {l2_dev} <-> {roce_dev}")
+        #print(f"Preparing commands: {test_mode} {test_pf} {pf_index} {perf_test} {test_port} {server_ip}")
+
+        port = self.GenerateIPerfTestPort ( perf_test, pf_index )
+        cmd = f"{perf_test}"
+        if test_mode == SERVER:
+            cmd = cmd + " -s "
+        else:
+            cmd = cmd + f" -c {server_ip} "
+
+        cmd = f"{cmd} -p {port} -P {test_instances} -t {test_duration}"
+
+        print(f"MODE {test_mode} {cmd}")
+        cmds_list.append(cmd)
+
+        return cmds_list
+
+    def GeneratePerfTestPort(self, perf_test: str, instance: int = 0, pf_index: int = 0):
+
+        if perf_test == "ib_write_bw":
+            test_port = 11000 + pf_index * 5000 + instance
+        elif perf_test == "ib_read_bw":
+            test_port = 21000 + pf_index * 5000 + instance
+        if perf_test == "ib_send_bw":
+            test_port = 31000 + pf_index * 5000 + instance
+        elif perf_test == "ib_atomic_bw":
+            test_port = 41000 + pf_index * 5000 + instance
+
+        return test_port
+
+    '''Flexible : provide either pf index or PF name'''
+    def GeneratePerfTestCommands(
+            self, test_mode: int = 0, test_pf: str = None, pf_index: int = 0,
+            perf_test: str = None, test_port: int = 0,
+            num_qps: int = 0, test_instances: int = 1, test_duration : int = 120,
+            cmn_opts: str = None, server_ip: str = None, **kwargs
+            ):
+
+        cmds_list = []
+
+        if test_pf == None:
+            l2_dev=self.GetInterfaceFromIndex(pf_index)
+        else:
+            l2_dev=test_pf
+        roce_dev = self.GetRdmaDev(l2_dev)
+
+        #print(f"INTERFACES:: MODE {test_mode} {l2_dev} <-> {roce_dev}")
+        #print(f"Preparing commands: {test_mode} {test_pf} {pf_index} {perf_test} {test_port} {server_ip}")
+        for each_instance in range(0, test_instances):
+            port=self.GeneratePerfTestPort(perf_test, each_instance, pf_index)
+            cmd=f"{perf_test} -d {roce_dev} -x 3 -q {num_qps} -p {port} -D {test_duration}"
+            if cmn_opts != None:
+                cmd=cmd+cmn_opts
+            if test_mode == CLIENT:
+                cmd=cmd+f" {server_ip}"
+            print(cmd)
+            cmds_list.append(cmd)
+
+        return cmds_list
 
     def Run(self, cmd):
+        handler=TransportHandler(self.transport, cmd)
+        self.transport_list.append(handler)
+        handler.run()
 
+    def GetHandler(self, cmd):
+        print(f"XXXXXXXYYYYYZZZZZ:{cmd}")
         handler=TransportHandler(self.transport, cmd)
         self.handler=handler
         handler.run()
+        return self.handler
 
     def Poll(self):
         return self.handler.poll()
