@@ -1,5 +1,5 @@
+import time
 import paramiko
-
 
 class TransportHandler:
     cmd : str = None
@@ -7,6 +7,7 @@ class TransportHandler:
     sresult: bytes = bytes(0)
     fresult: bytes = bytes(0)
     ret: int = -1
+    error: int = 0
 
     def __init__(self, transport: paramiko.Transport, cmd :str):
 
@@ -56,3 +57,17 @@ class TransportHandler:
 
     def run(self):
         self.session.exec_command(self.cmd)
+        self.active=True
+
+        buffSize = 4096
+        session=self.session
+
+        time.sleep(1)
+        if session.exit_status_ready():
+            ret = session.recv_exit_status()
+            if ret != 0:
+                self.fresult=session.recv_stderr(buffSize)
+                print(self.fresult)
+                self.error=1
+                #raise Exception(f"{self.cmd} failed with {ret}")
+
